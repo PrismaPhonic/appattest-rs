@@ -17,8 +17,8 @@ pub struct Assertion {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ClientData {
-    challenge: String,
+pub struct ClientData {
+    pub challenge: String,
 }
 
 impl Assertion {
