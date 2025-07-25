@@ -90,28 +90,22 @@ impl Assertion {
     /// ```
     pub fn verify(
         self,
-        client_data_byte: Vec<u8>,
+        client_data_hash: impl AsRef<[u8]>,
+        challenge: &str,
         app_id: &str,
-        public_key_byte: Vec<u8>,
+        public_key_byte: impl AsRef<[u8]>,
         previous_counter: u32,
         stored_challenge: &str,
     ) -> Result<(), Box<dyn Error>> {
-        let client_data = serde_json::from_slice::<ClientData>(&client_data_byte)?;
-
         let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
 
-        // 1. Compute clientDataHash as the SHA256 hash of clientData.
-        let mut hasher = Sha256::new();
-        hasher.update(&client_data_byte);
-        let client_data_hash = hasher.finalize();
-
-        let verifying_key = VerifyingKey::from_sec1_bytes(&public_key_byte)
+        let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
             .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
 
         // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
         let mut hasher = Sha256::new();
         hasher.update(auth_data.bytes.as_slice());
-        hasher.update(client_data_hash.as_slice());
+        hasher.update(client_data_hash.as_ref());
         let nonce_hash = hasher.finalize();
 
         let signature = ecdsa::Signature::from_der(&self.signature)
@@ -134,7 +128,7 @@ impl Assertion {
         }
 
         // 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
-        if stored_challenge != client_data.challenge {
+        if stored_challenge != challenge {
             return Err(Box::new(AppAttestError::Message(
                 "challenge mismatch".to_string(),
             )));
