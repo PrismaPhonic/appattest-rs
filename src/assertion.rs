@@ -1,12 +1,11 @@
-use base64::{engine::general_purpose, Engine};
-use p256::ecdsa::{self, signature::Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
-use ciborium::de::from_reader;
-use std::io::Cursor;
-use serde::{Deserialize, Serialize};
-use std::error::Error;
 use crate::{authenticator::AuthenticatorData, error::AppAttestError};
-
+use base64::{engine::general_purpose, Engine};
+use ciborium::de::from_reader;
+use p256::ecdsa::{self, signature::Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::error::Error;
+use std::io::Cursor;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Assertion {
@@ -22,9 +21,8 @@ pub struct ClientData {
 }
 
 impl Assertion {
-
     /// Creates a new `Assertion` from a Base64-encoded CBOR string.
-    /// 
+    ///
     /// # Arguments
     /// * `base64_assertion` - A string slice containing the Base64-encoded CBOR data.
     ///
@@ -36,11 +34,31 @@ impl Assertion {
             .map_err(|e| AppAttestError::Message(format!("Failed to decode Base64: {}", e)))?;
 
         let cursor = Cursor::new(decoded_bytes);
-        let assertion_result: Result<Assertion, _> = from_reader(cursor);  
+        let assertion_result: Result<Assertion, _> = from_reader(cursor);
         if let Ok(assertion) = assertion_result {
-            return  Ok(assertion)
+            return Ok(assertion);
         }
-        Err(AppAttestError::Message("unable to parse assertion".to_string()))
+        Err(AppAttestError::Message(
+            "unable to parse assertion".to_string(),
+        ))
+    }
+
+    /// Creates a new `Assertion` from a decoded CBOR string.
+    ///
+    /// # Arguments
+    /// * `assertion` - A string slice containing the CBOR data.
+    ///
+    /// # Errors
+    /// Returns `AppAttestError` if deserialization fails.
+    pub fn from_assertion<T: AsRef<[u8]>>(assertion: T) -> Result<Self, AppAttestError> {
+        let cursor = Cursor::new(assertion.as_ref());
+        let assertion_result: Result<Assertion, _> = from_reader(cursor);
+        if let Ok(assertion) = assertion_result {
+            return Ok(assertion);
+        }
+        Err(AppAttestError::Message(
+            "unable to parse assertion".to_string(),
+        ))
     }
 
     /// Verifies the authenticity of an assertion using provided data and cryptographic checks.
@@ -55,7 +73,7 @@ impl Assertion {
     /// ```
     /// use appattest_rs::assertion::Assertion;
     /// use base64::{engine::general_purpose, Engine};
-    /// 
+    ///
     /// let client_data_json = r#"{"challenge": "challenge123"}"#.as_bytes().to_vec();
     /// let app_id = "com.example.app";
     /// let public_key_base64 = "BLROJkpk8NoHVHAnkLOKWUrc4MhyMkATpDyDwjEk82o+uf+KCQiDoHZdlcJ1ff5HPgK7Jd/pTA3cyKOq5MYM6Gs=";
@@ -70,8 +88,15 @@ impl Assertion {
     ///     Err(e) => println!("Verification failed: {}", e),
     /// }
     /// ```
-    pub fn verify(self, client_data_byte: Vec<u8>, app_id: &str, public_key_byte: Vec<u8>, previous_counter: u32, stored_challenge: &str) -> Result<(), Box<dyn Error>> {
-        let client_data  = serde_json::from_slice::<ClientData>(&client_data_byte)?;
+    pub fn verify(
+        self,
+        client_data_byte: Vec<u8>,
+        app_id: &str,
+        public_key_byte: Vec<u8>,
+        previous_counter: u32,
+        stored_challenge: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let client_data = serde_json::from_slice::<ClientData>(&client_data_byte)?;
 
         let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
 
@@ -93,7 +118,10 @@ impl Assertion {
             .map_err(|_| AppAttestError::Message("invalid signature format".to_string()))?;
 
         // 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
-        if verifying_key.verify(nonce_hash.as_slice(), &signature).is_err() {
+        if verifying_key
+            .verify(nonce_hash.as_slice(), &signature)
+            .is_err()
+        {
             return Err(Box::new(AppAttestError::InvalidSignature));
         }
 
@@ -104,10 +132,12 @@ impl Assertion {
         if auth_data.counter <= previous_counter {
             return Err(Box::new(AppAttestError::InvalidCounter));
         }
- 
+
         // 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
         if stored_challenge != client_data.challenge {
-            return Err(Box::new(AppAttestError::Message("challenge mismatch".to_string())));
+            return Err(Box::new(AppAttestError::Message(
+                "challenge mismatch".to_string(),
+            )));
         }
 
         Ok(())
@@ -117,7 +147,7 @@ impl Assertion {
 #[cfg(test)]
 mod tests {
     use super::*;
-   
+
     #[test]
     fn test_from_base64_valid() {
         let valid_cbor_base64 = "omlzaWduYXR1cmVYRjBEAiAImFuY4+UbGZ5/ZbjAJpjQ3bd8GxaKFpMEo58WMEUGbwIgaqdDJnVS8/3oJCz16O5Zp4Qga5g6zrFF7eoiYEWkdtNxYXV0aGVudGljYXRvckRhdGFYJaRc2WwGuoniZEqtF+kolObjxcczFdDxbrhJR/nT8ehTQAAAAAI=";
