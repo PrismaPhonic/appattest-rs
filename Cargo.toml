@@ -22,3 +22,6 @@ openssl = "0.10"
 p256 = "0.13.2" 
 ciborium = "0.2.2" 
 x509-parser = "0.16.0"
+
+[features]
+testing = []

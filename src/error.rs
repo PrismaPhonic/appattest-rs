@@ -14,8 +14,8 @@ pub enum AppAttestError {
     ExpectedASN1Node,
     FailedToExtractValueFromASN1Node,
     ExpectedOctetStringInsideASN1Node,
-    
-    Message(String)
+
+    Message(String),
 }
 
 impl fmt::Display for AppAttestError {
@@ -32,8 +32,12 @@ impl fmt::Display for AppAttestError {
             AppAttestError::InvalidAppID => write!(f, "invalid App ID"),
             AppAttestError::InvalidClientData => write!(f, "invalid client data"),
             AppAttestError::ExpectedASN1Node => write!(f, "expected ASN1 node"),
-            AppAttestError::FailedToExtractValueFromASN1Node => write!(f, "failed to extract value from ASN1 node"),
-            AppAttestError::ExpectedOctetStringInsideASN1Node => write!(f, "expected octet string inside ASN1 node"),
+            AppAttestError::FailedToExtractValueFromASN1Node => {
+                write!(f, "failed to extract value from ASN1 node")
+            }
+            AppAttestError::ExpectedOctetStringInsideASN1Node => {
+                write!(f, "expected octet string inside ASN1 node")
+            }
         }
     }
 }

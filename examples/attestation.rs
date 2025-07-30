@@ -1,6 +1,5 @@
 use appattest_rs::attestation::Attestation;
 
-
 fn main() {
     let app_id = "<APPLE_TEAM_ID>.<APPLE_APP_ID>"; // replace this with yours. E.g 9000738U8.auth.iphone.com
     let key_id = "G3ef9pHt9N4DxUjo/hli9tV5gGDKaD3Ue7K8cqeN/r8=";
@@ -9,15 +8,12 @@ fn main() {
 
     // Convert from base64 CBOR to Assertion
     let assertion_result = Attestation::from_base64(base64_cbor_data);
-    
+
     match assertion_result {
-        Ok(attestation) => {
-            match attestation.verify(challenge, app_id, key_id) {
-                Ok(_) => println!("Verification successful!"),
-                Err(e) => println!("Verification failed: {:?}", e),
-            }
+        Ok(attestation) => match attestation.verify(challenge, app_id, key_id) {
+            Ok(_) => println!("Verification successful!"),
+            Err(e) => println!("Verification failed: {:?}", e),
         },
         Err(e) => println!("Failed to decode and create assertion: {:?}", e),
     }
 }
-

@@ -1,22 +1,24 @@
-use byteorder::{BigEndian, ByteOrder};
-use sha2::{Sha256, Digest};
-use std::error::Error;
 use crate::error::AppAttestError;
+use byteorder::{BigEndian, ByteOrder};
+use sha2::{Digest, Sha256};
+use std::error::Error;
 
- #[allow(dead_code)]
+#[allow(dead_code)]
 pub(crate) struct AuthenticatorData {
     pub(crate) bytes: Vec<u8>,
     pub(crate) rp_id_hash: Vec<u8>,
     pub(crate) flags: u8,
     pub(crate) counter: u32,
-    pub(crate) aaguid: Option<AAGUID>, 
+    pub(crate) aaguid: Option<AAGUID>,
     pub(crate) credential_id: Option<Vec<u8>>,
 }
 
 impl AuthenticatorData {
     pub(crate) fn new(auth_data_byte: Vec<u8>) -> Result<Self, AppAttestError> {
         if auth_data_byte.len() < 37 {
-            return Err(AppAttestError::Message("Authenticator data is too short".to_string()));
+            return Err(AppAttestError::Message(
+                "Authenticator data is too short".to_string(),
+            ));
         }
 
         let mut auth_data = AuthenticatorData {
@@ -28,11 +30,14 @@ impl AuthenticatorData {
             credential_id: None,
         };
 
-        auth_data.populate_optional_data().map_err(|e| AppAttestError::Message(e.to_string()))?;
+        auth_data
+            .populate_optional_data()
+            .map_err(|e| AppAttestError::Message(e.to_string()))?;
 
         Ok(auth_data)
     }
-    fn populate_optional_data(&mut self) -> Result<(), Box<dyn Error>>{
+
+    fn populate_optional_data(&mut self) -> Result<(), Box<dyn Error>> {
         if self.bytes.len() < 55 {
             return Ok(());
         }
@@ -46,21 +51,34 @@ impl AuthenticatorData {
 
         Ok(())
     }
-    pub(crate) fn is_valid_aaguid(&self) -> bool {
-        let expected_aaguid = APP_ATTEST.as_bytes().to_vec();
-        let mut prod_aaguid = expected_aaguid.clone();
-        prod_aaguid.extend(std::iter::repeat(0x00).take(7));
-       
-        if let Some(aaguid) = &self.aaguid {
-            return aaguid.bytes() == expected_aaguid || aaguid.bytes() == prod_aaguid
-        }
 
-        false
+    pub(crate) fn is_valid_aaguid(&self) -> bool {
+        let expected_prod_aaguid = APP_ATTEST.as_bytes().to_vec();
+        let mut prod_aaguid = expected_prod_aaguid.clone();
+        prod_aaguid.extend(std::iter::repeat(0x00).take(7));
+
+        let is_valid = if let Some(aaguid) = &self.aaguid {
+            let is_prod = aaguid.bytes() == expected_prod_aaguid || aaguid.bytes() == prod_aaguid;
+
+            if cfg!(feature = "testing") && !is_prod {
+                let expected_dev_aaguid = APP_ATTEST_DEVELOP.as_bytes().to_vec();
+                let mut dev_aaguid = expected_dev_aaguid.clone();
+                dev_aaguid.extend(std::iter::repeat(0x00).take(7));
+
+                aaguid.bytes() == expected_dev_aaguid || aaguid.bytes() == dev_aaguid
+            } else {
+                is_prod
+            }
+        } else {
+            false
+        };
+
+        is_valid
     }
 
     pub(crate) fn verify_counter(&self) -> Result<(), AppAttestError> {
         if self.counter != 0 {
-            return Err(AppAttestError::InvalidCounter)
+            return Err(AppAttestError::InvalidCounter);
         }
         Ok(())
     }
@@ -79,7 +97,7 @@ impl AuthenticatorData {
         if let Some(credential_id) = &self.credential_id {
             if credential_id == key_id {
                 return Ok(());
-            } 
+            }
         }
         Err(AppAttestError::InvalidCredentialID)
     }
@@ -112,15 +130,13 @@ impl AAGUID {
                 last_non_zero = Some(index);
             }
         }
-    
+
         match last_non_zero {
             Some(index) => &bytes[..=index],
-            None => &[],  
+            None => &[],
         }
     }
-    
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -132,7 +148,7 @@ mod tests {
         // use random flags
         bytes[32] = 0b00000001;
         // set counter to 1
-        BigEndian::write_u32(&mut bytes[33..37], 1); 
+        BigEndian::write_u32(&mut bytes[33..37], 1);
 
         let result = AuthenticatorData::new(bytes);
         assert!(result.is_ok());
@@ -144,7 +160,7 @@ mod tests {
     #[test]
     fn test_auth_data_new_too_short() {
         // here, we create bytes less than required 37 bytes
-        let bytes = vec![0u8; 36]; 
+        let bytes = vec![0u8; 36];
         let result = AuthenticatorData::new(bytes);
         assert!(result.is_err());
     }
