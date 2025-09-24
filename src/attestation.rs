@@ -17,7 +17,7 @@ use std::{io::Cursor, time::Duration};
 use der_parser::{ber::BerObjectContent, oid::Oid, parse_ber};
 use x509_parser::prelude::*;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Attestation {
     #[serde(rename = "attStmt")]
     statement: Statement,
@@ -25,7 +25,7 @@ pub struct Attestation {
     auth_data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Statement {
     #[serde(rename = "x5c")]
     certificates: Vec<Vec<u8>>,

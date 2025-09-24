@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::io::Cursor;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Assertion {
     #[serde(rename = "authenticatorData")]
     raw_authenticator_data: Vec<u8>,
