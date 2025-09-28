@@ -136,6 +136,64 @@ impl Assertion {
 
         Ok(())
     }
+
+    /// Returns the app id that verifies, if any do. Otherwise, returns an error if none verify.
+    pub fn app_id_verifies(
+        self,
+        client_data_hash: impl AsRef<[u8]>,
+        challenge: &str,
+        app_ids: &[&'static str],
+        public_key_byte: impl AsRef<[u8]>,
+        previous_counter: u32,
+        stored_challenge: &str,
+    ) -> Result<&'static str, Box<dyn Error>> {
+        let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
+
+        let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
+            .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
+
+        // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
+        let mut hasher = Sha256::new();
+        hasher.update(auth_data.bytes.as_slice());
+        hasher.update(client_data_hash.as_ref());
+        let nonce_hash = hasher.finalize();
+
+        let signature = ecdsa::Signature::from_der(&self.signature)
+            .map_err(|_| AppAttestError::Message("invalid signature format".to_string()))?;
+
+        // 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
+        if verifying_key
+            .verify(nonce_hash.as_slice(), &signature)
+            .is_err()
+        {
+            return Err(Box::new(AppAttestError::InvalidSignature));
+        }
+
+        // 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
+        let mut res = Err(AppAttestError::InvalidAppID);
+        for app_id in app_ids {
+            if auth_data.verify_app_id(app_id).is_ok() {
+                res = Ok(app_id);
+                break;
+            }
+        }
+
+        let verified_app_id = res?;
+
+        // 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
+        if auth_data.counter <= previous_counter {
+            return Err(Box::new(AppAttestError::InvalidCounter));
+        }
+
+        // 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
+        if stored_challenge != challenge {
+            return Err(Box::new(AppAttestError::Message(
+                "challenge mismatch".to_string(),
+            )));
+        }
+
+        Ok(verified_app_id)
+    }
 }
 
 #[cfg(test)]

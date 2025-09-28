@@ -163,7 +163,7 @@ impl Attestation {
     }
 
     // nonce_hash creates a new SHA256 hash of the composite item
-    fn nonce_hash(auth_data: &Vec<u8>, client_data_hash: Vec<u8>) -> Vec<u8> {
+    fn nonce_hash(auth_data: &[u8], client_data_hash: Vec<u8>) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(auth_data);
 
@@ -284,6 +284,76 @@ impl Attestation {
         auth_data.verify_key_id(&key_id_decoded_bytes)?;
 
         Ok((public_key_bytes.0.clone(), self.statement.receipt))
+    }
+
+    // If an app id verifies, returns  (app_id, public_key_bytes, statement.receipt)
+    #[allow(unused_variables, clippy::type_complexity)]
+    pub fn app_id_verifies(
+        self,
+        challenge: &str,
+        app_ids: &[&'static str],
+        key_id: &str,
+    ) -> Result<(&'static str, Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        // Step 1: Verify Certificates
+        let apple_root_cert = Attestation::fetch_apple_root_cert(
+            "https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem",
+        )?;
+
+        Attestation::verify_certificates(self.statement.certificates.clone(), &apple_root_cert)?;
+
+        // Step 2: Parse Authenticator Data
+        let auth_data = AuthenticatorData::new(self.auth_data)?;
+
+        // Step 3: Create and Verify Nonce
+        let client_data_hash = Attestation::client_data_hash(challenge);
+        let nonce = Attestation::nonce_hash(&auth_data.bytes, client_data_hash);
+
+        let cred_cert = X509::from_der(&self.statement.certificates[0])?;
+
+        let key_id_decoded_bytes = general_purpose::STANDARD
+            .decode(key_id)
+            .map_err(|e| AppAttestError::Message(e.to_string()))?;
+
+        // Step 4: Verify Public Key Hash
+        let public_key_bytes =
+            Attestation::verify_public_key_hash(&cred_cert, &key_id_decoded_bytes)?;
+        if !public_key_bytes.1 {
+            return Err(AppAttestError::InvalidPublicKey.into());
+        }
+
+        let extracted_nonce =
+            Attestation::extract_nonce_from_cert(&self.statement.certificates[0])?;
+        if extracted_nonce.as_slice() != nonce.as_slice() {
+            return Err(AppAttestError::InvalidNonce.into());
+        }
+
+        // Step 5: Verify App ID Hash
+        let mut res = Err(AppAttestError::InvalidAppID);
+        for app_id in app_ids {
+            if auth_data.verify_app_id(app_id).is_ok() {
+                res = Ok(app_id);
+                break;
+            }
+        }
+
+        let verified_app_id = res?;
+
+        // Step 6: Verify Counter
+        auth_data.verify_counter()?;
+
+        // Step 7: Verify AAGUID
+        if !auth_data.is_valid_aaguid() {
+            return Err(AppAttestError::InvalidAAGUID.into());
+        }
+
+        // Step 8: Verify Credential ID
+        auth_data.verify_key_id(&key_id_decoded_bytes)?;
+
+        Ok((
+            verified_app_id,
+            public_key_bytes.0.clone(),
+            self.statement.receipt,
+        ))
     }
 }
 
