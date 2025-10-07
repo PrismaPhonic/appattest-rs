@@ -286,7 +286,7 @@ impl Attestation {
         Ok((public_key_bytes.0.clone(), self.statement.receipt))
     }
 
-    // If an app id verifies, returns  (app_id, public_key_bytes, statement.receipt)
+    // If an app id verifies, returns (app_id, public_key_bytes, statement.receipt)
     #[allow(unused_variables, clippy::type_complexity)]
     pub fn app_id_verifies(
         self,

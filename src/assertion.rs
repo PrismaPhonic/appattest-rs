@@ -137,15 +137,18 @@ impl Assertion {
         Ok(())
     }
 
-    /// Returns the app id that verifies, if any do. Otherwise, returns an error if none verify.
+    /// Returns the app id that verifies, if any do. Otherwise, returns an error
+    /// if none verify.
+    ///
+    /// Does not check the challenge matches the stored challenge - note that
+    /// this breaks from convention, but does not necessarily garuantee
+    /// better/more security.
     pub fn app_id_verifies(
         self,
         client_data_hash: impl AsRef<[u8]>,
-        challenge: &str,
         app_ids: &[&'static str],
         public_key_byte: impl AsRef<[u8]>,
         previous_counter: u32,
-        stored_challenge: &str,
     ) -> Result<&'static str, Box<dyn Error>> {
         let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
 
@@ -183,13 +186,6 @@ impl Assertion {
         // 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
         if auth_data.counter <= previous_counter {
             return Err(Box::new(AppAttestError::InvalidCounter));
-        }
-
-        // 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
-        if stored_challenge != challenge {
-            return Err(Box::new(AppAttestError::Message(
-                "challenge mismatch".to_string(),
-            )));
         }
 
         Ok(verified_app_id)
