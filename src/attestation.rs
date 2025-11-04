@@ -244,11 +244,11 @@ impl Attestation {
         Attestation::verify_certificates(self.statement.certificates.clone(), &apple_root_cert)?;
 
         // Step 2: Parse Authenticator Data
-        let auth_data = AuthenticatorData::new(self.auth_data)?;
+        let auth_data = AuthenticatorData::new(&self.auth_data[..])?;
 
         // Step 3: Create and Verify Nonce
         let client_data_hash = Attestation::client_data_hash(challenge);
-        let nonce = Attestation::nonce_hash(&auth_data.bytes, client_data_hash);
+        let nonce = Attestation::nonce_hash(&self.auth_data, client_data_hash);
 
         let cred_cert = X509::from_der(&self.statement.certificates[0])?;
 
@@ -302,11 +302,11 @@ impl Attestation {
         Attestation::verify_certificates(self.statement.certificates.clone(), &apple_root_cert)?;
 
         // Step 2: Parse Authenticator Data
-        let auth_data = AuthenticatorData::new(self.auth_data)?;
+        let auth_data = AuthenticatorData::new(&self.auth_data)?;
 
         // Step 3: Create and Verify Nonce
         let client_data_hash = Attestation::client_data_hash(challenge);
-        let nonce = Attestation::nonce_hash(&auth_data.bytes, client_data_hash);
+        let nonce = Attestation::nonce_hash(&self.auth_data, client_data_hash);
 
         let cred_cert = X509::from_der(&self.statement.certificates[0])?;
 

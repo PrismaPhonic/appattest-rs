@@ -5,7 +5,6 @@ use std::error::Error;
 
 #[allow(dead_code)]
 pub(crate) struct AuthenticatorData {
-    pub(crate) bytes: Vec<u8>,
     pub(crate) rp_id_hash: Vec<u8>,
     pub(crate) flags: u8,
     pub(crate) counter: u32,
@@ -14,7 +13,7 @@ pub(crate) struct AuthenticatorData {
 }
 
 impl AuthenticatorData {
-    pub(crate) fn new(auth_data_byte: Vec<u8>) -> Result<Self, AppAttestError> {
+    pub(crate) fn new(auth_data_byte: &[u8]) -> Result<Self, AppAttestError> {
         if auth_data_byte.len() < 37 {
             return Err(AppAttestError::Message(
                 "Authenticator data is too short".to_string(),
@@ -22,7 +21,6 @@ impl AuthenticatorData {
         }
 
         let mut auth_data = AuthenticatorData {
-            bytes: auth_data_byte.clone(),
             rp_id_hash: auth_data_byte[0..32].to_vec(),
             flags: auth_data_byte[32],
             counter: BigEndian::read_u32(&auth_data_byte[33..37]),
@@ -31,20 +29,20 @@ impl AuthenticatorData {
         };
 
         auth_data
-            .populate_optional_data()
+            .populate_optional_data(auth_data_byte)
             .map_err(|e| AppAttestError::Message(e.to_string()))?;
 
         Ok(auth_data)
     }
 
-    fn populate_optional_data(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.bytes.len() < 55 {
+    fn populate_optional_data(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        if bytes.len() < 55 {
             return Ok(());
         }
 
-        let length = BigEndian::read_u16(&self.bytes[53..55]) as usize;
-        let credential_id = self.bytes[55..55 + length].to_vec();
-        let aaguid = AAGUID::new(self.bytes[37..53].to_vec())?;
+        let length = BigEndian::read_u16(&bytes[53..55]) as usize;
+        let credential_id = bytes[55..55 + length].to_vec();
+        let aaguid = AAGUID::new(bytes[37..53].to_vec())?;
 
         self.credential_id = Some(credential_id);
         self.aaguid = Some(aaguid);
@@ -150,7 +148,7 @@ mod tests {
         // set counter to 1
         BigEndian::write_u32(&mut bytes[33..37], 1);
 
-        let result = AuthenticatorData::new(bytes);
+        let result = AuthenticatorData::new(&bytes);
         assert!(result.is_ok());
 
         let auth_data = result.unwrap();
@@ -161,7 +159,7 @@ mod tests {
     fn test_auth_data_new_too_short() {
         // here, we create bytes less than required 37 bytes
         let bytes = vec![0u8; 36];
-        let result = AuthenticatorData::new(bytes);
+        let result = AuthenticatorData::new(&bytes);
         assert!(result.is_err());
     }
 
@@ -188,7 +186,6 @@ mod tests {
         let hash = hasher.finalize().to_vec();
 
         let auth_data = AuthenticatorData {
-            bytes: vec![],
             rp_id_hash: hash,
             flags: 0,
             counter: 0,
@@ -204,7 +201,6 @@ mod tests {
     fn test_verify_key_id() {
         let key_id = vec![1, 2, 3, 4];
         let auth_data = AuthenticatorData {
-            bytes: vec![],
             rp_id_hash: vec![],
             flags: 0,
             counter: 0,

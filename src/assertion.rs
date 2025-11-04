@@ -97,14 +97,14 @@ impl Assertion {
         previous_counter: u32,
         stored_challenge: &str,
     ) -> Result<(), Box<dyn Error>> {
-        let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
+        let auth_data = AuthenticatorData::new(&self.raw_authenticator_data[..])?;
 
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
             .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
 
         // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
         let mut hasher = Sha256::new();
-        hasher.update(auth_data.bytes.as_slice());
+        hasher.update(self.raw_authenticator_data.as_slice());
         hasher.update(client_data_hash.as_ref());
         let nonce_hash = hasher.finalize();
 
@@ -150,14 +150,14 @@ impl Assertion {
         public_key_byte: impl AsRef<[u8]>,
         previous_counter: u32,
     ) -> Result<&'static str, Box<dyn Error>> {
-        let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
+        let auth_data = AuthenticatorData::new(&self.raw_authenticator_data)?;
 
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
             .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
 
         // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
         let mut hasher = Sha256::new();
-        hasher.update(auth_data.bytes.as_slice());
+        hasher.update(self.raw_authenticator_data.as_slice());
         hasher.update(client_data_hash.as_ref());
         let nonce_hash = hasher.finalize();
 
