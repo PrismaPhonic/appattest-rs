@@ -20,7 +20,7 @@ base64 = "0.22"
 openssl = "0.10"
 p256 = "0.13"
 ciborium = "0.2"
-x509-parser = "0.17"
+x509-parser = "0.18"
 
 [features]
 testing = []
