@@ -1,93 +1,98 @@
 use crate::{authenticator::AuthenticatorData, error::AppAttestError};
 use base64::{engine::general_purpose, Engine};
-use ciborium::de::from_reader;
 use p256::ecdsa::{self, signature::Verifier, VerifyingKey};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::error::Error;
-use std::io::Cursor;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Assertion {
-    #[serde(rename = "authenticatorData")]
-    raw_authenticator_data: Vec<u8>,
-    #[serde(rename = "signature")]
-    signature: Vec<u8>,
+const AUTHENTICATOR_DATA_LEN: usize = 37;
+
+#[derive(Debug, Clone)]
+pub struct Assertion<'a> {
+    raw_authenticator_data: &'a [u8],
+    signature: &'a [u8],
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ClientData {
-    pub challenge: String,
-}
+impl<'a> Assertion<'a> {
+    /// Parse an `Assertion` from raw CBOR bytes, borrowing directly from the input.
+    fn from_cbor(cbor: &'a [u8]) -> Result<Self, AppAttestError> {
+        let mut decoder = minicbor::Decoder::new(cbor);
+        let map_len = decoder
+            .map()
+            .map_err(|_| AppAttestError::Message("expected CBOR map".to_string()))?;
 
-impl Assertion {
+        let mut authenticator_data: Option<&'a [u8]> = None;
+        let mut signature: Option<&'a [u8]> = None;
+
+        let entries = map_len.unwrap_or(0);
+        for _ in 0..entries {
+            let key = decoder
+                .str()
+                .map_err(|_| AppAttestError::Message("expected string key".to_string()))?;
+            match key {
+                "authenticatorData" => {
+                    let bytes = decoder.bytes().map_err(|_| {
+                        AppAttestError::Message("expected bytes for authenticatorData".to_string())
+                    })?;
+                    if bytes.len() != AUTHENTICATOR_DATA_LEN {
+                        return Err(AppAttestError::Message(format!(
+                            "authenticatorData must be {} bytes, got {}",
+                            AUTHENTICATOR_DATA_LEN,
+                            bytes.len()
+                        )));
+                    }
+                    authenticator_data = Some(bytes);
+                }
+                "signature" => {
+                    signature = Some(decoder.bytes().map_err(|_| {
+                        AppAttestError::Message("expected bytes for signature".to_string())
+                    })?);
+                }
+                _ => {
+                    decoder.skip().map_err(|_| {
+                        AppAttestError::Message("failed to skip unknown field".to_string())
+                    })?;
+                }
+            }
+        }
+
+        let raw_authenticator_data = authenticator_data
+            .ok_or_else(|| AppAttestError::Message("missing authenticatorData".to_string()))?;
+        let signature =
+            signature.ok_or_else(|| AppAttestError::Message("missing signature".to_string()))?;
+
+        Ok(Assertion {
+            raw_authenticator_data,
+            signature,
+        })
+    }
+
     /// Creates a new `Assertion` from a Base64-encoded CBOR string.
     ///
-    /// # Arguments
-    /// * `base64_assertion` - A string slice containing the Base64-encoded CBOR data.
+    /// The decoded bytes are written into `buf` to avoid heap allocation.
+    /// The returned `Assertion` borrows from `buf`.
     ///
     /// # Errors
     /// Returns `AppAttestError` if decoding or deserialization fails.
-    pub fn from_base64(base64_assertion: &str) -> Result<Self, AppAttestError> {
-        let decoded_bytes = general_purpose::STANDARD
-            .decode(base64_assertion)
+    pub fn from_base64(
+        base64_assertion: &str,
+        buf: &'a mut [u8; 192],
+    ) -> Result<Self, AppAttestError> {
+        let len = general_purpose::STANDARD
+            .decode_slice(base64_assertion, buf.as_mut_slice())
             .map_err(|e| AppAttestError::Message(format!("Failed to decode Base64: {}", e)))?;
 
-        let cursor = Cursor::new(decoded_bytes);
-        let assertion_result: Result<Assertion, _> = from_reader(cursor);
-        if let Ok(assertion) = assertion_result {
-            return Ok(assertion);
-        }
-        Err(AppAttestError::Message(
-            "unable to parse assertion".to_string(),
-        ))
+        Self::from_cbor(&buf[..len])
     }
 
-    /// Creates a new `Assertion` from a decoded CBOR string.
-    ///
-    /// # Arguments
-    /// * `assertion` - A string slice containing the CBOR data.
+    /// Creates a new `Assertion` from raw CBOR bytes.
+    /// The returned `Assertion` borrows from the input slice.
     ///
     /// # Errors
     /// Returns `AppAttestError` if deserialization fails.
-    pub fn from_assertion<T: AsRef<[u8]>>(assertion: T) -> Result<Self, AppAttestError> {
-        let cursor = Cursor::new(assertion.as_ref());
-        let assertion_result: Result<Assertion, _> = from_reader(cursor);
-        if let Ok(assertion) = assertion_result {
-            return Ok(assertion);
-        }
-        Err(AppAttestError::Message(
-            "unable to parse assertion".to_string(),
-        ))
+    pub fn from_assertion(assertion: &'a [u8]) -> Result<Self, AppAttestError> {
+        Self::from_cbor(assertion)
     }
 
     /// Verifies the authenticity of an assertion using provided data and cryptographic checks.
-    /// # Arguments
-    /// * `client_data_byte` - A vector of bytes representing serialized client data.
-    /// * `app_id` - A string slice representing the application identifier.
-    /// * `public_key_byte` - A vector of bytes representing the public key used for verifying the signature.
-    /// * `previous_counter` - The counter value from the last successful verification.
-    /// * `stored_challenge` - A string slice representing the challenge previously issued to the client.
-    ///
-    /// # Example
-    /// ```
-    /// use appattest_rs::assertion::Assertion;
-    /// use base64::{engine::general_purpose, Engine};
-    ///
-    /// let client_data_json = r#"{"challenge": "challenge123"}"#.as_bytes().to_vec();
-    /// let app_id = "com.example.app";
-    /// let public_key_base64 = "BLROJkpk8NoHVHAnkLOKWUrc4MhyMkATpDyDwjEk82o+uf+KCQiDoHZdlcJ1ff5HPgK7Jd/pTA3cyKOq5MYM6Gs=";
-    /// let public_key_bytes = general_purpose::STANDARD.decode(public_key_base64).expect("unable to decode public key");
-    /// let previous_counter = 5;
-    /// let stored_challenge = "challenge123";
-    ///
-    /// let assertion = Assertion::from_base64("omlzaWduYXR1cmVYRzBFAiEA3P1gbUuJK9dipE03PXibJgDMDJ3BeFp3NDtSL9U5sXECIHn4VZOXWpHpTP8WEXdqiqDQXGYpmEzmFwjlAa2Z7FkScWF1dGhlbnRpY2F0b3JEYXRhWCWkXNlsBrqJ4mRKrRfpKJTm48XHMxXQ8W64SUf50/HoU0AAAAAB").unwrap();
-    ///
-    /// match assertion.verify(client_data_json, app_id, public_key_bytes, previous_counter, stored_challenge) {
-    ///     Ok(_) => println!("Verification successful!"),
-    ///     Err(e) => println!("Verification failed: {}", e),
-    /// }
-    /// ```
     pub fn verify(
         self,
         client_data_hash: impl AsRef<[u8]>,
@@ -96,42 +101,40 @@ impl Assertion {
         public_key_byte: impl AsRef<[u8]>,
         previous_counter: u32,
         stored_challenge: &str,
-    ) -> Result<(), Box<dyn Error>> {
-        let auth_data = AuthenticatorData::new(&self.raw_authenticator_data[..])?;
+    ) -> Result<(), AppAttestError> {
+        let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
 
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
             .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
 
         // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
         let mut hasher = Sha256::new();
-        hasher.update(self.raw_authenticator_data.as_slice());
+        hasher.update(self.raw_authenticator_data);
         hasher.update(client_data_hash.as_ref());
         let nonce_hash = hasher.finalize();
 
-        let signature = ecdsa::Signature::from_der(&self.signature)
+        let signature = ecdsa::Signature::from_der(self.signature)
             .map_err(|_| AppAttestError::Message("invalid signature format".to_string()))?;
 
-        // 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
+        // 3. Verify that the assertion's signature is valid for nonce.
         if verifying_key
             .verify(nonce_hash.as_slice(), &signature)
             .is_err()
         {
-            return Err(Box::new(AppAttestError::InvalidSignature));
+            return Err(AppAttestError::InvalidSignature);
         }
 
-        // 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
+        // 4. Verify that the RP ID matches the app ID.
         auth_data.verify_app_id(app_id)?;
 
-        // 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
+        // 5. Verify counter is greater than previous.
         if auth_data.counter <= previous_counter {
-            return Err(Box::new(AppAttestError::InvalidCounter));
+            return Err(AppAttestError::InvalidCounter);
         }
 
-        // 6. Verify that the embedded challenge in the client data matches the earlier challenge to the client.
+        // 6. Verify challenge matches.
         if stored_challenge != challenge {
-            return Err(Box::new(AppAttestError::Message(
-                "challenge mismatch".to_string(),
-            )));
+            return Err(AppAttestError::Message("challenge mismatch".to_string()));
         }
 
         Ok(())
@@ -140,39 +143,37 @@ impl Assertion {
     /// Returns the app id that verifies, if any do. Otherwise, returns an error
     /// if none verify.
     ///
-    /// Does not check the challenge matches the stored challenge - note that
-    /// this breaks from convention, but does not necessarily garuantee
-    /// better/more security.
+    /// Does not check the challenge matches the stored challenge.
     pub fn app_id_verifies(
         self,
         client_data_hash: impl AsRef<[u8]>,
         app_ids: &[&'static str],
         public_key_byte: impl AsRef<[u8]>,
         previous_counter: u32,
-    ) -> Result<&'static str, Box<dyn Error>> {
-        let auth_data = AuthenticatorData::new(&self.raw_authenticator_data)?;
+    ) -> Result<&'static str, AppAttestError> {
+        let auth_data = AuthenticatorData::new(self.raw_authenticator_data)?;
 
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key_byte.as_ref())
             .map_err(|_| AppAttestError::Message("failed to parse the public key".to_string()))?;
 
         // 2. Concatenate authenticatorData and clientDataHash, and apply a SHA256 hash over the result to form nonce.
         let mut hasher = Sha256::new();
-        hasher.update(self.raw_authenticator_data.as_slice());
+        hasher.update(self.raw_authenticator_data);
         hasher.update(client_data_hash.as_ref());
         let nonce_hash = hasher.finalize();
 
-        let signature = ecdsa::Signature::from_der(&self.signature)
+        let signature = ecdsa::Signature::from_der(self.signature)
             .map_err(|_| AppAttestError::Message("invalid signature format".to_string()))?;
 
-        // 3. Use the public key that you store from the attestation object to verify that the assertion’s signature is valid for nonce.
+        // 3. Verify that the assertion's signature is valid for nonce.
         if verifying_key
             .verify(nonce_hash.as_slice(), &signature)
             .is_err()
         {
-            return Err(Box::new(AppAttestError::InvalidSignature));
+            return Err(AppAttestError::InvalidSignature);
         }
 
-        // 4. Compute the SHA256 hash of the client’s App ID, and verify that it matches the RP ID in the authenticator data.
+        // 4. Verify that the RP ID matches one of the app IDs.
         let mut res = Err(AppAttestError::InvalidAppID);
         for app_id in app_ids {
             if auth_data.verify_app_id(app_id).is_ok() {
@@ -183,9 +184,9 @@ impl Assertion {
 
         let verified_app_id = res?;
 
-        // 5. Verify that the authenticator data’s counter value is greater than the value from the previous assertion, or greater than 0 on the first assertion.
+        // 5. Verify counter is greater than previous.
         if auth_data.counter <= previous_counter {
-            return Err(Box::new(AppAttestError::InvalidCounter));
+            return Err(AppAttestError::InvalidCounter);
         }
 
         Ok(verified_app_id)
@@ -199,7 +200,18 @@ mod tests {
     #[test]
     fn test_from_base64_valid() {
         let valid_cbor_base64 = "omlzaWduYXR1cmVYRjBEAiAImFuY4+UbGZ5/ZbjAJpjQ3bd8GxaKFpMEo58WMEUGbwIgaqdDJnVS8/3oJCz16O5Zp4Qga5g6zrFF7eoiYEWkdtNxYXV0aGVudGljYXRvckRhdGFYJaRc2WwGuoniZEqtF+kolObjxcczFdDxbrhJR/nT8ehTQAAAAAI=";
-        let result = Assertion::from_base64(valid_cbor_base64);
+        let mut buf = [0u8; 192];
+        let result = Assertion::from_base64(valid_cbor_base64, &mut buf);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_from_assertion_valid() {
+        let cbor_bytes = general_purpose::STANDARD
+            .decode("omlzaWduYXR1cmVYRjBEAiAImFuY4+UbGZ5/ZbjAJpjQ3bd8GxaKFpMEo58WMEUGbwIgaqdDJnVS8/3oJCz16O5Zp4Qga5g6zrFF7eoiYEWkdtNxYXV0aGVudGljYXRvckRhdGFYJaRc2WwGuoniZEqtF+kolObjxcczFdDxbrhJR/nT8ehTQAAAAAI=")
+            .unwrap();
+        let assertion = Assertion::from_assertion(&cbor_bytes).unwrap();
+        assert_eq!(assertion.raw_authenticator_data.len(), 37);
+        assert_eq!(assertion.signature.len(), 70);
     }
 }

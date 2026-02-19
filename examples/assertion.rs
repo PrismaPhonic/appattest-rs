@@ -1,6 +1,12 @@
-use appattest_rs::assertion::{Assertion, ClientData};
+use appattest_rs::assertion::Assertion;
 use base64::{engine::general_purpose, Engine};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+#[derive(Deserialize)]
+struct ClientData {
+    challenge: String,
+}
 
 fn main() {
     let client_data_json = r#"{"challenge": "5b3b2303-e650-4a56-a9ec-33e3e2a90d14"}"#
@@ -18,7 +24,8 @@ fn main() {
     let base64_cbor_data = "omlzaWduYXR1cmVYRjBEAiAImFuY4+UbGZ5/ZbjAJpjQ3bd8GxaKFpMEo58WMEUGbwIgaqdDJnVS8/3oJCz16O5Zp4Qga5g6zrFF7eoiYEWkdtNxYXV0aGVudGljYXRvckRhdGFYJaRc2WwGuoniZEqtF+kolObjxcczFdDxbrhJR/nT8ehTQAAAAAI=";
 
     // Convert from base64 CBOR to Assertion
-    let assertion_result = Assertion::from_base64(base64_cbor_data);
+    let mut buf = [0u8; 192];
+    let assertion_result = Assertion::from_base64(base64_cbor_data, &mut buf);
     let client_data = serde_json::from_slice::<ClientData>(&client_data_json).unwrap();
 
     // 1. Compute clientDataHash as the SHA256 hash of clientData.

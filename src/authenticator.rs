@@ -1,77 +1,72 @@
 use crate::error::AppAttestError;
 use byteorder::{BigEndian, ByteOrder};
 use sha2::{Digest, Sha256};
-use std::error::Error;
 
-#[allow(dead_code)]
-pub(crate) struct AuthenticatorData {
-    pub(crate) rp_id_hash: Vec<u8>,
+const APP_ATTEST: &[u8] = b"appattest";
+const APP_ATTEST_DEVELOP: &[u8] = b"appattestdevelop";
+
+pub(crate) struct AuthenticatorData<'a> {
+    pub(crate) rp_id_hash: [u8; 32],
+    #[allow(dead_code)]
     pub(crate) flags: u8,
     pub(crate) counter: u32,
-    pub(crate) aaguid: Option<AAGUID>,
-    pub(crate) credential_id: Option<Vec<u8>>,
+    aaguid: Option<Aaguid<'a>>,
+    credential_id: Option<&'a [u8]>,
 }
 
-impl AuthenticatorData {
-    pub(crate) fn new(auth_data_byte: &[u8]) -> Result<Self, AppAttestError> {
+impl<'a> AuthenticatorData<'a> {
+    pub(crate) fn new(auth_data_byte: &'a [u8]) -> Result<Self, AppAttestError> {
         if auth_data_byte.len() < 37 {
-            return Err(AppAttestError::Message(
-                "Authenticator data is too short".to_string(),
-            ));
+            return Err(AppAttestError::AuthenticatorDataTooShort);
         }
 
+        let rp_id_hash: [u8; 32] = auth_data_byte[0..32]
+            .try_into()
+            .expect("slice is exactly 32 bytes");
+
         let mut auth_data = AuthenticatorData {
-            rp_id_hash: auth_data_byte[0..32].to_vec(),
+            rp_id_hash,
             flags: auth_data_byte[32],
             counter: BigEndian::read_u32(&auth_data_byte[33..37]),
             aaguid: None,
             credential_id: None,
         };
 
-        auth_data
-            .populate_optional_data(auth_data_byte)
-            .map_err(|e| AppAttestError::Message(e.to_string()))?;
+        auth_data.populate_optional_data(auth_data_byte)?;
 
         Ok(auth_data)
     }
 
-    fn populate_optional_data(&mut self, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    fn populate_optional_data(&mut self, bytes: &'a [u8]) -> Result<(), AppAttestError> {
         if bytes.len() < 55 {
             return Ok(());
         }
 
         let length = BigEndian::read_u16(&bytes[53..55]) as usize;
-        let credential_id = bytes[55..55 + length].to_vec();
-        let aaguid = AAGUID::new(bytes[37..53].to_vec())?;
-
-        self.credential_id = Some(credential_id);
-        self.aaguid = Some(aaguid);
+        let end = 55 + length;
+        if bytes.len() < end {
+            return Err(AppAttestError::AuthenticatorDataTooShort);
+        }
+        self.credential_id = Some(&bytes[55..end]);
+        self.aaguid = Some(Aaguid::new(&bytes[37..53])?);
 
         Ok(())
     }
 
     pub(crate) fn is_valid_aaguid(&self) -> bool {
-        let expected_prod_aaguid = APP_ATTEST.as_bytes().to_vec();
-        let mut prod_aaguid = expected_prod_aaguid.clone();
-        prod_aaguid.extend(std::iter::repeat(0x00).take(7));
-
-        let is_valid = if let Some(aaguid) = &self.aaguid {
-            let is_prod = aaguid.bytes() == expected_prod_aaguid || aaguid.bytes() == prod_aaguid;
-
-            if cfg!(feature = "testing") && !is_prod {
-                let expected_dev_aaguid = APP_ATTEST_DEVELOP.as_bytes().to_vec();
-                let mut dev_aaguid = expected_dev_aaguid.clone();
-                dev_aaguid.extend(std::iter::repeat(0x00).take(7));
-
-                aaguid.bytes() == expected_dev_aaguid || aaguid.bytes() == dev_aaguid
-            } else {
-                is_prod
-            }
-        } else {
-            false
+        let Some(aaguid) = &self.aaguid else {
+            return false;
         };
 
-        is_valid
+        if aaguid.matches(APP_ATTEST) {
+            return true;
+        }
+
+        if cfg!(feature = "testing") {
+            return aaguid.matches(APP_ATTEST_DEVELOP);
+        }
+
+        false
     }
 
     pub(crate) fn verify_counter(&self) -> Result<(), AppAttestError> {
@@ -82,17 +77,16 @@ impl AuthenticatorData {
     }
 
     pub(crate) fn verify_app_id(&self, app_id: &str) -> Result<(), AppAttestError> {
-        let mut hasher = Sha256::new();
-        hasher.update(app_id.as_bytes());
-        if self.rp_id_hash != hasher.finalize().as_slice() {
+        let hash = Sha256::digest(app_id.as_bytes());
+        if self.rp_id_hash != hash.as_slice() {
             Err(AppAttestError::InvalidAppID)
         } else {
             Ok(())
         }
     }
 
-    pub(crate) fn verify_key_id(&self, key_id: &Vec<u8>) -> Result<(), AppAttestError> {
-        if let Some(credential_id) = &self.credential_id {
+    pub(crate) fn verify_key_id(&self, key_id: &[u8]) -> Result<(), AppAttestError> {
+        if let Some(credential_id) = self.credential_id {
             if credential_id == key_id {
                 return Ok(());
             }
@@ -101,39 +95,30 @@ impl AuthenticatorData {
     }
 }
 
-pub(crate) struct AAGUID(String);
+/// A 16-byte AAGUID that borrows from authenticator data.
+struct Aaguid<'a> {
+    bytes: &'a [u8],
+}
 
-const APP_ATTEST: &str = "appattest";
-const APP_ATTEST_DEVELOP: &str = "appattestdevelop";
-
-impl AAGUID {
-    fn new(b: Vec<u8>) -> Result<Self, AppAttestError> {
-        let ids: [&str; 2] = [APP_ATTEST, APP_ATTEST_DEVELOP];
-        for &id in ids.iter() {
-            if id.as_bytes() == AAGUID::trim_trailing_zeros(b.as_slice()) {
-                return Ok(AAGUID(id.to_string()));
-            }
-        }
-        Err(AppAttestError::InvalidAAGUID)
-    }
-
-    fn bytes(&self) -> Vec<u8> {
-        self.0.as_bytes().to_vec()
-    }
-
-    fn trim_trailing_zeros(bytes: &[u8]) -> &[u8] {
-        let mut last_non_zero = None;
-        for (index, &value) in bytes.iter().enumerate() {
-            if value != 0 {
-                last_non_zero = Some(index);
-            }
-        }
-
-        match last_non_zero {
-            Some(index) => &bytes[..=index],
-            None => &[],
+impl<'a> Aaguid<'a> {
+    fn new(bytes: &'a [u8]) -> Result<Self, AppAttestError> {
+        let trimmed = trim_trailing_zeros(bytes);
+        if trimmed == APP_ATTEST || trimmed == APP_ATTEST_DEVELOP {
+            Ok(Aaguid { bytes })
+        } else {
+            Err(AppAttestError::InvalidAAGUID)
         }
     }
+
+    /// Check whether this AAGUID matches the given identifier, ignoring trailing zeros.
+    fn matches(&self, expected: &[u8]) -> bool {
+        trim_trailing_zeros(self.bytes) == expected
+    }
+}
+
+fn trim_trailing_zeros(bytes: &[u8]) -> &[u8] {
+    let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |pos| pos + 1);
+    &bytes[..len]
 }
 
 #[cfg(test)]
@@ -165,28 +150,26 @@ mod tests {
 
     #[test]
     fn test_aaguid_new_valid() {
-        let appattest_bytes = APP_ATTEST.as_bytes().to_vec();
-        let result = AAGUID::new(appattest_bytes);
+        let mut bytes = [0u8; 16];
+        bytes[..APP_ATTEST.len()].copy_from_slice(APP_ATTEST);
+        let result = Aaguid::new(&bytes);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().0, APP_ATTEST);
     }
 
     #[test]
     fn test_aaguid_new_invalid() {
-        let invalid_bytes = vec![0u8; 16]; // use dummy bytes that does not match any known AAGUID
-        let result = AAGUID::new(invalid_bytes);
+        let invalid_bytes = [0u8; 16];
+        let result = Aaguid::new(&invalid_bytes);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_verify_app_id() {
         let app_id = "app.apple.connect";
-        let mut hasher = Sha256::new();
-        hasher.update(app_id.as_bytes());
-        let hash = hasher.finalize().to_vec();
+        let hash = Sha256::digest(app_id.as_bytes());
 
         let auth_data = AuthenticatorData {
-            rp_id_hash: hash,
+            rp_id_hash: hash.into(),
             flags: 0,
             counter: 0,
             aaguid: None,
@@ -199,16 +182,18 @@ mod tests {
 
     #[test]
     fn test_verify_key_id() {
-        let key_id = vec![1, 2, 3, 4];
+        let key_id = [1u8, 2, 3, 4];
+        let _data = [0u8; 60];
+        // We need to construct AuthenticatorData with a credential_id
         let auth_data = AuthenticatorData {
-            rp_id_hash: vec![],
+            rp_id_hash: [0u8; 32],
             flags: 0,
             counter: 0,
             aaguid: None,
-            credential_id: Some(key_id.clone()),
+            credential_id: Some(&key_id),
         };
 
         assert!(auth_data.verify_key_id(&key_id).is_ok());
-        assert!(auth_data.verify_key_id(&vec![4, 3, 2, 1]).is_err());
+        assert!(auth_data.verify_key_id(&[4, 3, 2, 1]).is_err());
     }
 }

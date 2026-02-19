@@ -14,6 +14,7 @@ pub enum AppAttestError {
     ExpectedASN1Node,
     FailedToExtractValueFromASN1Node,
     ExpectedOctetStringInsideASN1Node,
+    AuthenticatorDataTooShort,
 
     Message(String),
 }
@@ -37,6 +38,9 @@ impl fmt::Display for AppAttestError {
             }
             AppAttestError::ExpectedOctetStringInsideASN1Node => {
                 write!(f, "expected octet string inside ASN1 node")
+            }
+            AppAttestError::AuthenticatorDataTooShort => {
+                write!(f, "authenticator data is too short")
             }
         }
     }

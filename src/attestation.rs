@@ -12,7 +12,7 @@ use openssl::{
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::{io::Cursor, time::Duration};
+use std::time::Duration;
 
 use der_parser::{ber::BerObjectContent, oid::Oid, parse_ber};
 use x509_parser::prelude::*;
@@ -46,14 +46,8 @@ impl Attestation {
             .decode(base64_attestation)
             .map_err(|e| AppAttestError::Message(format!("Failed to decode Base64: {}", e)))?;
 
-        let cursor = Cursor::new(decoded_bytes);
-        let assertion_result: Result<Attestation, _> = from_reader(cursor);
-        if let Ok(assertion) = assertion_result {
-            return Ok(assertion);
-        }
-        Err(AppAttestError::Message(
-            "unable to parse base64 attestation".to_string(),
-        ))
+        from_reader(decoded_bytes.as_slice())
+            .map_err(|_| AppAttestError::Message("unable to parse base64 attestation".to_string()))
     }
 
     /// Fetches the Apple root certificate from the specified URL.
@@ -270,7 +264,7 @@ impl Attestation {
         }
 
         // Step 5: Verify App ID Hash
-        auth_data.verify_app_id(&app_id)?;
+        auth_data.verify_app_id(app_id)?;
 
         // Step 6: Verify Counter
         auth_data.verify_counter()?;
