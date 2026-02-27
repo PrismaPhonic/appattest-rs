@@ -9,10 +9,12 @@ use openssl::{
     stack::Stack,
     x509::{store::X509StoreBuilder, X509StoreContext, X509},
 };
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+#[cfg(feature = "reqwest")]
 use std::time::Duration;
+#[cfg(feature = "reqwest")]
+use reqwest::blocking::Client;
 
 use der_parser::{ber::BerObjectContent, oid::Oid, parse_ber};
 use x509_parser::prelude::*;
@@ -51,6 +53,7 @@ impl Attestation {
     }
 
     /// Fetches the Apple root certificate from the specified URL.
+    #[cfg(feature = "reqwest")]
     fn fetch_apple_root_cert(url: &str) -> Result<X509, AppAttestError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -199,7 +202,11 @@ impl Attestation {
         Ok(pub_key_bytes)
     }
 
-    /// Verify performs the complete attestation verification
+    /// Verify performs the complete attestation verification, fetching the Apple root certificate
+    /// automatically on each call.
+    ///
+    /// If you want to avoid the network round-trip on every verification, use
+    /// [`verify_with_cert`](Self::verify_with_cert) and supply the cached PEM bytes yourself.
     ///
     /// # Arguments
     /// * `challenge` - A reference to the challenge string provided by the verifier.
@@ -207,8 +214,7 @@ impl Attestation {
     /// * `key_id` - A reference to the key identifier expected to match the public key.
     ///
     /// # Returns
-    /// This method returns `Ok(())` if all verification steps are successful. If any step fails,
-    /// it returns `Err` with an appropriate error encapsulated in a `Box<dyn Error>`.
+    /// Returns `Ok((public_key_bytes, receipt))` if all verification steps succeed.
     ///
     /// # Example
     /// ```no_run
@@ -223,18 +229,66 @@ impl Attestation {
     ///
     /// attestation.verify(challenge, app_id, key_id);
     /// ```
-    #[allow(unused_variables)]
+    #[cfg(feature = "reqwest")]
     pub fn verify(
         self,
         challenge: &str,
         app_id: &str,
         key_id: &str,
     ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        // Step 1: Verify Certificates
         let apple_root_cert = Attestation::fetch_apple_root_cert(
             "https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem",
         )?;
+        let cert_pem = apple_root_cert.to_pem()?;
+        self.verify_with_cert(challenge, app_id, key_id, &cert_pem)
+    }
 
+    /// Verify performs the complete attestation verification using caller-supplied Apple root
+    /// certificate PEM bytes.
+    ///
+    /// This is the preferred entry point for production use: fetch (and cache) the Apple root
+    /// certificate once, then pass the raw PEM bytes here on every call to avoid a network
+    /// round-trip per verification.
+    ///
+    /// The current Apple App Attestation Root CA PEM can be obtained from:
+    /// `https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem`
+    ///
+    /// # Arguments
+    /// * `challenge` - A reference to the challenge string provided by the verifier.
+    /// * `app_id` - A reference to the application identifier.
+    /// * `key_id` - A reference to the key identifier expected to match the public key.
+    /// * `apple_root_cert_pem` - The PEM-encoded Apple App Attestation Root CA certificate bytes.
+    ///
+    /// # Returns
+    /// Returns `Ok((public_key_bytes, receipt))` if all verification steps succeed.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use appattest_rs::attestation::Attestation;
+    ///
+    /// // Fetch once and cache; reuse `APPLE_ROOT_CERT_PEM` for all subsequent calls.
+    /// static APPLE_ROOT_CERT_PEM: &[u8] = include_bytes!("Apple_App_Attestation_Root_CA.pem");
+    ///
+    /// let challenge = "example_challenge";
+    /// let app_id = "com.example.app";
+    /// let key_id = "base64encodedkeyid==";
+    ///
+    /// let base64_cbor_data = "o2NmbXR....";
+    /// let attestation = Attestation::from_base64(base64_cbor_data).expect("unable to convert from base64");
+    ///
+    /// attestation.verify_with_cert(challenge, app_id, key_id, APPLE_ROOT_CERT_PEM);
+    /// ```
+    pub fn verify_with_cert(
+        self,
+        challenge: &str,
+        app_id: &str,
+        key_id: &str,
+        apple_root_cert_pem: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        let apple_root_cert = X509::from_pem(apple_root_cert_pem)
+            .map_err(|e| AppAttestError::Message(format!("Failed to parse certificate: {}", e)))?;
+
+        // Step 1: Verify Certificates
         Attestation::verify_certificates(self.statement.certificates.clone(), &apple_root_cert)?;
 
         // Step 2: Parse Authenticator Data
@@ -280,19 +334,49 @@ impl Attestation {
         Ok((public_key_bytes.0.clone(), self.statement.receipt))
     }
 
-    // If an app id verifies, returns (app_id, public_key_bytes, statement.receipt)
-    #[allow(unused_variables, clippy::type_complexity)]
+    /// If any of the supplied app IDs verifies, returns `(app_id, public_key_bytes, receipt)`.
+    ///
+    /// Fetches the Apple root certificate automatically on each call. See
+    /// [`app_id_verifies_with_cert`](Self::app_id_verifies_with_cert) to supply the cert yourself
+    /// and avoid a network round-trip per call.
+    #[cfg(feature = "reqwest")]
+    #[allow(clippy::type_complexity)]
     pub fn app_id_verifies(
         self,
         challenge: &str,
         app_ids: &[&'static str],
         key_id: &str,
     ) -> Result<(&'static str, Vec<u8>, Vec<u8>), Box<dyn Error>> {
-        // Step 1: Verify Certificates
         let apple_root_cert = Attestation::fetch_apple_root_cert(
             "https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem",
         )?;
+        let cert_pem = apple_root_cert.to_pem()?;
+        self.app_id_verifies_with_cert(challenge, app_ids, key_id, &cert_pem)
+    }
 
+    /// If any of the supplied app IDs verifies, returns `(app_id, public_key_bytes, receipt)`.
+    ///
+    /// Uses caller-supplied Apple root certificate PEM bytes so the caller can cache the cert and
+    /// avoid a network round-trip on every verification. See [`verify_with_cert`](Self::verify_with_cert)
+    /// for details on obtaining and caching the certificate.
+    ///
+    /// # Arguments
+    /// * `challenge` - A reference to the challenge string provided by the verifier.
+    /// * `app_ids` - A slice of candidate application identifiers; the first that verifies is returned.
+    /// * `key_id` - A reference to the key identifier expected to match the public key.
+    /// * `apple_root_cert_pem` - The PEM-encoded Apple App Attestation Root CA certificate bytes.
+    #[allow(clippy::type_complexity)]
+    pub fn app_id_verifies_with_cert(
+        self,
+        challenge: &str,
+        app_ids: &[&'static str],
+        key_id: &str,
+        apple_root_cert_pem: &[u8],
+    ) -> Result<(&'static str, Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        let apple_root_cert = X509::from_pem(apple_root_cert_pem)
+            .map_err(|e| AppAttestError::Message(format!("Failed to parse certificate: {}", e)))?;
+
+        // Step 1: Verify Certificates
         Attestation::verify_certificates(self.statement.certificates.clone(), &apple_root_cert)?;
 
         // Step 2: Parse Authenticator Data
